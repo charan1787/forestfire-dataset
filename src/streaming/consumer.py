@@ -1,33 +1,45 @@
+import os, json, csv, sys, pathlib
 from kafka import KafkaConsumer
-import json
-import pandas as pd
-import os
 
-# Connect from host -> must use localhost:9093
-consumer = KafkaConsumer(
-    "forest_fire_weather",
-    bootstrap_servers="localhost:9093",
-    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-    auto_offset_reset="earliest",   # start from earliest if no committed offset
-    enable_auto_commit=True,
-    group_id="fire-consumer-group"
-)
+BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:9092")
+TOPIC     = os.getenv("TOPIC", "weather_stream")
+GROUP_ID  = os.getenv("GROUP_ID", "weather-group")
+OUT_FILE  = os.getenv("OUT_FILE", "/app/data/stream/stream_data.csv")
 
-# Ensure the folder exists
-csv_path = "data/stream/stream_data.csv"
-os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+COLUMNS = ["Temperature","RH","Ws","Rain","FFMC","DMC","ISI","Classes","Region"]
 
-print("🚀 Consumer started, listening to 'forest_fire_weather'...")
+def ensure_header(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists() or path.stat().st_size == 0:
+        with path.open("w", newline="") as f:
+            csv.writer(f).writerow(COLUMNS)
 
-for message in consumer:
-    event = message.value
-    print("✅ Received:", event)
+def main():
+    out_path = pathlib.Path(OUT_FILE)
+    ensure_header(out_path)
 
-    # Append to CSV
-    df = pd.DataFrame([event])
-    df.to_csv(
-        csv_path,
-        mode="a",
-        header=not os.path.exists(csv_path),  # write header only if file doesn’t exist
-        index=False
+    print(f"[consumer] connecting to {BOOTSTRAP}, topic={TOPIC}, group={GROUP_ID}")
+    consumer = KafkaConsumer(
+        TOPIC,
+        bootstrap_servers=BOOTSTRAP,
+        group_id=GROUP_ID,
+        auto_offset_reset="earliest",
+        enable_auto_commit=True,
+        value_deserializer=lambda b: json.loads(b.decode("utf-8")),
     )
+
+    with out_path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=COLUMNS)
+        for msg in consumer:
+            data = msg.value
+            # Keep only known columns; fill missing
+            row = {k: data.get(k, "") for k in COLUMNS}
+            writer.writerow(row)
+            f.flush()
+            print("[consumer] <-", row)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

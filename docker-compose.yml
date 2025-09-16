@@ -1,18 +1,19 @@
-version: "3.8"
-
 services:
   # ------------------ Zookeeper ------------------
   zookeeper:
     image: bitnami/zookeeper:3
+    platform: linux/amd64
     container_name: zookeeper
     environment:
       - ALLOW_ANONYMOUS_LOGIN=yes
     ports:
       - "2181:2181"
 
+
   # ------------------ Kafka ------------------
   kafka:
     image: bitnami/kafka:3
+    platform: linux/amd64
     container_name: kafka
     depends_on:
       - zookeeper
@@ -20,30 +21,59 @@ services:
       - KAFKA_BROKER_ID=1
       - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
       - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,EXTERNAL://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9093
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT
       - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
     ports:
       - "9092:9092"
-      - "9093:9093"
 
   # ------------------ Flask API ------------------
   flask-app:
     build:
       context: .
-      dockerfile: src/weather/Dockerfile
+      dockerfile: Dockerfile
     container_name: flask-app
-    volumes:
-      - ./models:/app/models
-      - ./src/weather:/app
-      - ./templates:/app/templates
+    environment:
+     - SERVICE=flask
     ports:
       - "5000:5000"
     depends_on:
-      - kafka
-      - zookeeper
+     - kafka
+     - zookeeper
 
+# ------------------ Kafka Producer ------------------
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: producer
+    environment:
+      - SERVICE=producer
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - TOPIC=weather_stream
+      - SLEEP_SEC=1
+      - DATA_FILE=/app/data/master_data.csv
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - kafka
+  # ------------------ Kafka Consumer ------------------
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: consumer
+    environment:
+      - SERVICE=consumer
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - TOPIC=weather_stream
+      - GROUP_ID=weather-group
+      - OUT_FILE=/app/data/stream/stream_data.csv
+    volumes:
+     - ./data:/app/data
+    depends_on:
+    - kafka
   # ------------------ Postgres for Airflow ------------------
   postgres:
     image: postgres:13
@@ -61,11 +91,11 @@ services:
     container_name: airflow-webserver
     depends_on:
       - postgres
+    env_file:
+      - .env
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__FERNET_KEY=nE1oceWHojWetXnFNbl53-spI4VHV7I8y7BR8DXcE6o=   # 👈 replace with your real Fernet key
-      - AIRFLOW__WEBSERVER__SECRET_KEY=99d59d7aeae4eb65a6b006c97018151d # 👈 replace with your secret key
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - _AIRFLOW_WWW_USER_CREATE=true
       - _AIRFLOW_WWW_USER_USERNAME=airflow
@@ -85,11 +115,11 @@ services:
     container_name: airflow-scheduler
     depends_on:
       - postgres
+    env_file:
+      - .env
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__FERNET_KEY=YOUR_FERNET_KEY
-      - AIRFLOW__WEBSERVER__SECRET_KEY=YOUR_SECRET_KEY
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
     volumes:
       - ./src/airflows:/opt/airflow/dags
